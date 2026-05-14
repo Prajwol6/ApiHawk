@@ -1604,13 +1604,11 @@ class APIHawk:
         await asyncio.gather(*tasks)
 
         # Phase 1b: POST probing on 405s
-        method_not
-     # Phase 1b: POST probing on 405s
-        post_targets = [a for a in self.found_apis if a.get("status") == 405]
-        if post_targets:
-            info(f"POST probing {len(post_targets)} endpoints returning 405...")
+        method_not_allowed = [a for a in self.found_apis if a.get("status") == 405]
+        if method_not_allowed:
+            info(f"Phase 1b: POST probing {len(method_not_allowed)} endpoints returning 405...")
             post_sem = asyncio.Semaphore(min(self.concurrency, 10))
-            tasks = [self.probe_post(session, a["url"], post_sem) for a in post_targets]
+            tasks = [self.probe_post(session, str(a['url']), post_sem) for a in method_not_allowed]
             await asyncio.gather(*tasks)
         print()
 
@@ -1735,9 +1733,9 @@ class APIHawk:
             # Also scan subdomains that returned 200/401/403
             if self.subdomain_results and self.subdomain_results.get("live_http"):
                 sub_scan_targets = []
-                for hostname, info in self.subdomain_results["live_http"].items():
-                    if info["status"] in (200, 401, 403):
-                        url = f"{info['scheme']}://{hostname}"
+                for hostname, host_info in self.subdomain_results["live_http"].items():
+                    if host_info["status"] in (200, 401, 403):
+                        url = f"{host_info['scheme']}://{hostname}"
                         sub_scan_targets.append((url, hostname))
 
                 if sub_scan_targets:
