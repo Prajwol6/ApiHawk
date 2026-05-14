@@ -1397,6 +1397,8 @@ class APIHawk:
             await evasion_delay(self.delay, self.waf_evasion)
             async with session.get(URL(url, encoded=True), ssl=False,
                                     headers=evasion_headers(self.waf_evasion)) as r:
+                if r.status not in (200, 201):
+                    return
                 headers = r.headers
                 if "x-content-type-options" not in headers:
                     missing.append("X-Content-Type-Options")
@@ -1793,7 +1795,8 @@ class APIHawk:
                 url = str(a["url"])
                 status = a["status"]
                 color = C.GREEN if 200 <= status < 300 else C.YELLOW if status < 400 else C.RED
-                print(f"     {color}[{status}]{C.RESET} {url}")
+                note = f" {C.YELLOW}(WAF/Auth block — verify manually){C.RESET}" if status == 403 else ""
+                print(f"     {color}[{status}]{C.RESET} {url}{note}")
             print()
 
         # GraphQL endpoints
