@@ -11,6 +11,9 @@ import random
 import re
 import sys
 import time
+import socket
+import hashlib
+import struct
 from urllib.parse import urljoin, urlparse
 
 try:
@@ -85,9 +88,301 @@ API_PATHS = [
     "/api/analyze",
 ]
 
+# ─── Small built-in subdomain wordlist (top 500) ──────────────────────────────
+# Extends to ~2000 common patterns for built-in brute force.
+# For full-scale recon, use --subdomain-wordlist with assetnote's 9M list.
+SUBDOMAIN_WORDLIST = [
+    # dev/staging environments — these are the real bounty finds
+    "staging", "stage", "dev", "development", "test", "testing", "qa",
+    "uat", "preprod", "pre-prod", "beta", "alpha", "demo", "sandbox",
+    "internal", "external", "public", "private", "corp", "corporate",
+    "admin", "administrator", "manage", "management", "dashboard",
+    "portal", "app", "apps", "application", "api", "api-v1", "api-v2",
+    "v1", "v2", "v3", "v4", "v5",
+    "www", "www2", "www3", "www1", "web", "webserver", "webserver1",
+    "mail", "email", "smtp", "imap", "pop3", "webmail", "exchange",
+    "owa", "outlook", "mail2", "mx", "mx1", "mx2",
+    "remote", "vpn", "vpn1", "vpn2", "openvpn", "wireguard",
+    "ssh", "rdp", "bastion", "jump", "jumpbox", "jumpserver",
+    "jenkins", "ci", "cd", "build", "builder", "buildserver",
+    "git", "gitlab", "github", "bitbucket", "gitea", "gogs",
+    "jira", "confluence", "wiki", "notion", "sharepoint",
+    "grafana", "prometheus", "datadog", "newrelic", "sentry",
+    "kibana", "elastic", "elasticsearch", "logstash",
+    "sonar", "sonarqube", "nexus", "artifactory", "jfrog",
+    "swagger", "swagger-ui", "redoc", "docs", "documentation",
+    "api-docs", "api-v1-docs", "developer", "developers",
+    "blog", "news", "status", "help", "support", "community",
+    "forum", "chat", "discord", "slack", "teams",
+    "analytics", "stats", "statistics", "metrics", "monitor",
+    "monitoring", "logging", "logs", "audit",
+    "auth", "login", "signin", "signup", "register", "registration",
+    "oauth", "oauth2", "saml", "sso", "identity", "idp",
+    "cdn", "static", "static1", "static2", "assets", "assets1",
+    "img", "images", "media", "video", "videos", "cdn1", "cdn2",
+    "upload", "uploads", "download", "downloads", "files", "file",
+    "s3", "bucket", "storage", "backup", "backups",
+    "db", "database", "mysql", "postgres", "redis", "mongodb",
+    "search", "elasticsearch", "solr", "sphinx",
+    "ws", "wss", "socket", "sockets", "websocket", "websockets",
+    "stream", "streaming", "rtmp", "rtsp",
+    "proxy", "proxy1", "proxy2", "gateway", "api-gateway",
+    "lb", "loadbalancer", "load-balancer", "cluster", "node",
+    "server", "server1", "server2", "server3",
+    "ns1", "ns2", "ns3", "dns1", "dns2", "dns",
+    "ntp", "time", "ntp1", "ntp2",
+    "ldap", "ldaps", "ad", "active-directory", "dc",
+    "console", "panel", "cpanel", "whm", "plesk",
+    "phpmyadmin", "phpadmin", "adminer", "mysql-admin",
+    "phpmyadmin2", "pma",
+    "debug", "debugger", "debugging", "profiler", "xdebug",
+    "testapi", "api-test", "apitest", "api-dev", "api-staging",
+    "api-qa", "api-uat", "sandbox-api", "api-sandbox",
+    "mobile", "mobile-api", "mapi", "mobileapi",
+    "ios", "android", "iphone", "app-ios", "app-android",
+    "graphql", "gql", "graphql-api", "gql-api", "graphiql",
+    "playground", "altair", "graphql-playground",
+    "redis", "redis-admin", "redis-commander",
+    "kafka", "zookeeper", "rabbitmq", "mq", "activemq",
+    "splunk", "splunk-search", "splunk-web",
+    "nagios", "icinga", "zabbix", "cacti", "prometheus-ui",
+    "docker", "registry", "docker-registry", "harbor",
+    "k8s", "kubernetes", "kube", "kubernetes-dashboard",
+    "dashboard-k8s", "k8s-dashboard",
+    "swarm", "nomad", "consul",
+    "terraform", "vault", "vault-ui",
+    "pipeline", "pipelines", "runner", "runners",
+    "worker", "workers", "queue", "queues",
+    "webhook", "webhooks", "hook", "hooks",
+    "callback", "callbacks", "notify", "notification",
+    "sms", "sms-api", "sms-gateway", "sms-gw",
+    "push", "push-api", "notifications",
+    "payment", "payments", "pay", "billing",
+    "checkout", "cart", "shop", "store",
+    "orders", "order", "inventory",
+    "crm", "sales", "marketing", "analytics",
+    "recruit", "recruitment", "jobs", "careers",
+    "partner", "partners", "partner-api",
+    "vendor", "vendors", "supplier",
+    "tunnel", "tunnels", "ngrok", "localtunnel",
+    "mirror", "mirrors", "cache", "caching",
+    "office", "office365", "sharepoint",
+    "lync", "skype", "teams",
+    "hq", "nyc", "london", "sfo", "ams", "fra", "sin", "tokyo",
+    "us-east", "us-west", "eu-west", "eu-central",
+    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+    "eu-west-1", "eu-west-2", "eu-central-1",
+    "ap-southeast-1", "ap-southeast-2", "ap-northeast-1",
+    "sa-east-1", "ca-central-1",
+    "prod", "production", "prod-1", "prod-2", "production-1",
+    "dr", "disaster-recovery", "backup-site",
+    "failover", "replica", "replicas", "replication",
+    "read", "readonly", "read-only", "replica-read",
+    "write", "writeonly", "master", "slave",
+    "primary", "secondary", "standby",
+    "blue", "green", "bluegreen", "canary",
+    "release", "releases", "feature", "branch",
+    "review", "review-app", "reviewapps",
+    "pr", "pullrequest", "preview", "preview-app",
+    "web-app", "webapp", "frontend", "front-end",
+    "backend", "back-end", "middleware",
+    "service", "services", "microservice", "microservices",
+    "soa", "esb", "bus", "eventbus",
+    "rpc", "grpc", "rest", "rest-api", "restapi",
+    "soap", "soap-api", "wsdl",
+    "odata", "odata-api",
+    "hub", "connect", "integration", "integrations",
+    "sync", "synchronization", "data-sync",
+    "import", "exports", "export", "data-import",
+    "etl", "data-pipeline",
+    "report", "reports", "reporting", "bi",
+    "insight", "insights", "dashboard-reports",
+    "ml", "ai", "inference", "model", "models",
+    "recommendation", "recommendations", "suggest",
+    "personalization", "personalize",
+    "config", "configuration", "settings", "setup",
+    "admin-console", "admin-panel", "admin-dashboard",
+    "superadmin", "root",
+    "register", "registration", "sign-up", "sign_up",
+    "forgot", "reset", "password-reset",
+    "verify", "verification", "confirm",
+    "mfa", "2fa", "otp", "totp", "authenticator",
+    "validate", "validation",
+    "compliance", "audit-log", "audit-logs",
+    "privacy", "gdpr", "ccpa",
+    "legal", "terms", "tos",
+    "tutorial", "tutorials", "guide", "guides",
+    "faq", "faqs", "knowledgebase", "knowledge-base",
+    "kb", "help-center", "helpcenter",
+    "roadmap", "changelog", "changelogs",
+    "version", "versions", "version-history",
+    "api-keys", "apikeys", "api-key", "credentials",
+    "license", "licenses", "licensing",
+    "trial", "trials", "onboarding", "onboard",
+    "welcome", "getting-started", "gettingstarted",
+    "start", "home", "index", "landing",
+    "feature", "features", "pricing",
+    "about", "contact", "team",
+    "press", "media-kit", "brand",
+    "investor", "investors", "ir",
+    "security", "trust", "vulnerability-disclosure",
+    "bugbounty", "hackerone", "bugcrowd",
+    "hall-of-fame", "halloffame",
+    "robots.txt", "sitemap", "sitemap.xml",
+    "manifest", "manifest.json",
+    "crossdomain.xml", "clientaccesspolicy.xml",
+    "env", ".env", "environment",
+    ".git", ".git/config", ".svn", ".hg",
+    "backup", "old", "new", "temp", "tmp",
+    "bak", "backup-db", "db-backup",
+    "dump", "sql-dump", "database-dump",
+    "schema", "schema.sql", "migration", "migrations",
+    "logs", "error_log", "access_log",
+    "info", "phpinfo", "info.php",
+    "server-status", "server-info",
+    "wsgi", "uwsgi", "gunicorn",
+    "nginx-status", "nginx-health",
+    "php-fpm", "fpm-status", "fpm-ping",
+    "opcache", "apc", "apcu",
+    "xhprof", "xdebug", "tideways",
+    "blackfire", "blackfire.io",
+    "newrelic", "new-relic",
+    "appdynamics", "dynatrace",
+    "instana", "datadog-agent", "dd-agent",
+    "consul-agent", "consul-ui",
+    "nomad-ui", "vault-ui",
+    "traefik", "traefik-dashboard",
+    "haproxy", "haproxy-stats",
+    "envoy", "envoy-admin",
+    "istio", "istio-dashboard",
+    "linkerd", "linkerd-dashboard",
+    "nginx-ingress", "ingress-nginx",
+    "kong", "kong-admin", "kong-manager",
+    "tyk", "tyk-dashboard",
+    "apisix", "apisix-dashboard",
+    "page", "pages", "page1", "page2",
+    "mysite", "site", "sites", "website",
+    "wordpress", "wp", "wp-admin", "wp-login",
+    "joomla", "drupal", "magento",
+    "phpbb", "vbulletin", "smf",
+    "shopify", "shopify-admin",
+    "salesforce", "sf", "force",
+    "hubspot", "marketo", "pardot",
+    "zendesk", "freshdesk", "freshservice",
+    "jira-servicedesk", "servicedesk",
+    "statuspage", "status-page",
+    "s3-website", "bucket-s3", "s3-bucket",
+    "cloudfront", "cf", "cloudfront-cdn",
+    "azure", "azure-app", "azure-webapp",
+    "azure-api", "azure-functions", "azure-func",
+    "gcp", "google-cloud", "gae", "appspot",
+    "firebase", "firebase-app", "firebase-hosting",
+    "heroku", "heroku-app", "herokuapp",
+    "netlify", "netlify-app",
+    "vercel", "vercel-app", "now",
+    "render", "render-app",
+    "fly", "fly-app", "flyio",
+    "railway", "railway-app",
+    "pantheon", "acquia",
+    "awstats", "awstat",
+    "webdav", "dav",
+    "caldav", "carddav",
+    "cal", "calendar",
+    "contacts", "addressbook",
+    "drive", "fileserver", "file-server", "nas",
+    "print", "printer",
+    "scanner", "scan",
+    "fax", "faxserver",
+    "voip", "sip", "asterisk", "freeswitch",
+    "phone", "phones",
+    "pbx", "ipbx",
+    "uc", "unified-communications",
+    "meet", "meeting", "meetings", "zoom",
+    "webex", "gotomeeting", "teams-meetings",
+    "classroom", "training", "learn",
+    "moodle", "canvas", "blackboard",
+    "lms", "learning",
+    "e-learning", "elearning",
+    "academy", "university",
+    "adfs", "adfs01", "adfs02",
+    "sts", "secure-token-service",
+    "idp", "identity-provider",
+    "shibboleth", "cas",
+    "keycloak", "keycloak-admin",
+    "okta", "okta-admin",
+    "duo", "duo-admin",
+    "ping", "pingid", "pingfederate",
+    "radius", "radius-server",
+    "tacacs", "tacacs+",
+    "networking", "network",
+    "router", "switch", "firewall",
+    "fw", "fortinet", "fortigate", "forti",
+    "paloalto", "pal", "panorama",
+    "cisco", "cisco-asa", "asa",
+    "juniper", "netscreen",
+    "sophos", "sonicwall", "checkpoint",
+    "f5", "bigip", "f5-bigip",
+    "citrix", "netscaler",
+    "vmware", "vsphere", "vcenter", "esxi",
+    "vcloud", "vcd",
+    "hyper-v", "hyperv", "scvmm",
+    "xen", "xenserver", "xcp-ng",
+    "proxmox", "pve",
+    "ovirt", "ovirt-engine",
+    "virtualbox", "vbox",
+    "kvm", "libvirt",
+    "docker-host", "dockerhost",
+    "rancher", "rancher-server",
+    "portainer", "portainer-ce",
+    "lxc", "lxd",
+    "openshift", "ocp",
+    "okd", "origin",
+    "eks", "aks", "gke",
+    "k8s-api", "kubernetes-api",
+    "kubelet", "kubelet-api",
+    "etcd", "etcd-cluster",
+    "harbor", "harbor-ui",
+    "nexus-repo", "nexus-repository",
+    "artifactory-ui",
+    "gcr", "docker-hub",
+    "quay", "quay-io",
+    "ecr", "aws-ecr",
+    "serverless", "lambda",
+    "function", "functions", "func",
+    "step-functions", "stepfunctions",
+    "sqs", "sns", "eventbridge",
+]
+
+# Common subdomain prefixes built from permutations of the above patterns
+SUBDOMAIN_WORDLIST += [
+    f"{prefix}-{suffix}"
+    for prefix in ["dev", "stage", "staging", "beta", "test", "qa", "uat", "preprod", "sandbox", "demo", "internal", "private", "corp"]
+    for suffix in ["api", "app", "web", "portal", "admin", "dashboard", "graphql", "swagger", "docs"]
+]
+SUBDOMAIN_WORDLIST += [
+    f"{prefix}{suffix}"
+    for prefix in ["dev", "stage", "staging", "test", "qa", "uat", "preprod", "sandbox"]
+    for suffix in ["api", "app", "web", "portal", "admin", "graphql"]
+]
+SUBDOMAIN_WORDLIST += [
+    f"s{suffix}"
+    for suffix in ["3", "3-console", "3-website", "3-bucket"]
+]
+# Add numerics
+SUBDOMAIN_WORDLIST += [f"app{n}" for n in range(1, 20)]
+SUBDOMAIN_WORDLIST += [f"api{n}" for n in range(1, 20)]
+SUBDOMAIN_WORDLIST += [f"web{n}" for n in range(1, 20)]
+SUBDOMAIN_WORDLIST += [f"server{n}" for n in range(1, 20)]
+SUBDOMAIN_WORDLIST += [f"node{n}" for n in range(1, 10)]
+
+# Deduplicate while preserving order
+_seen = set()
+SUBDOMAIN_WORDLIST = [w for w in SUBDOMAIN_WORDLIST if not (w in _seen or _seen.add(w))]
+
+info(f"Built-in subdomain wordlist: {len(SUBDOMAIN_WORDLIST)} entries")
+
 # ─── JS Scraper Patterns ───────────────────────────────────────────────────────
 
-# Finds API paths inside JS bundles
 JS_ENDPOINT_PATTERNS = [
     r'["\'](/api/[a-zA-Z0-9/_\-\.]+)["\']',
     r'["\'](/v[0-9]+/[a-zA-Z0-9/_\-\.]+)["\']',
@@ -102,7 +397,6 @@ JS_ENDPOINT_PATTERNS = [
     r'https?://[a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}[/a-zA-Z0-9\-\._~:/?#\[\]@!$&\'()*+,;=%]*',
 ]
 
-# Finds sensitive strings leaked in JS
 JS_SECRET_PATTERNS = [
     (r'["\']?api[_\-]?key["\']?\s*[:=]\s*["\']([a-zA-Z0-9\-_]{16,})["\']',       "API Key"),
     (r'["\']?secret["\']?\s*[:=]\s*["\']([a-zA-Z0-9\-_]{16,})["\']',              "Secret"),
@@ -156,12 +450,10 @@ REFERERS = [
 
 
 def random_ip():
-    """Generate a plausible public-looking IPv4 for X-Forwarded-For."""
     return f"{random.randint(1, 223)}.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(1, 254)}"
 
 
 def evasion_headers(waf_evasion, extra=None):
-    """Build per-request headers. With waf_evasion on, rotate UA, language, encoding, referer, X-Forwarded-For."""
     if waf_evasion:
         h = {
             "User-Agent": random.choice(USER_AGENTS),
@@ -184,7 +476,6 @@ def evasion_headers(waf_evasion, extra=None):
 
 
 async def evasion_delay(delay, waf_evasion):
-    """Sleep before a request. Fixed --delay wins; otherwise WAF mode adds random jitter."""
     if delay > 0:
         await asyncio.sleep(delay)
     elif waf_evasion:
@@ -192,7 +483,6 @@ async def evasion_delay(delay, waf_evasion):
 
 
 def encoded_path_variants(paths):
-    """For paths with >=2 segments, produce a variant with inner slashes percent-encoded as %2F."""
     variants = []
     seen = set(paths)
     for p in paths:
@@ -222,6 +512,601 @@ INTROSPECTION_QUERY = {
     """
 }
 
+# ─── CNAME patterns for subdomain takeover detection ──────────────────────────
+
+TAKEOVER_FINGERPRINTS = [
+    # AWS
+    (r"(?i)s3-website[-.](us|eu|ap|sa|ca|me|af|il)",                        "AWS S3"),
+    (r"(?i)cloudfront\.net$",                                                "AWS CloudFront"),
+    (r"(?i)elasticbeanstalk\.com$",                                          "AWS Elastic Beanstalk"),
+    (r"(?i)execute-api\..*\.amazonaws\.com$",                                "AWS API Gateway"),
+    (r"(?i)loadbalancer\.amazonaws\.com$",                                   "AWS ALB/NLB"),
+    (r"(?i)rds\.amazonaws\.com$",                                            "AWS RDS"),
+    # Azure
+    (r"(?i)\.azurewebsites\.net$",                                           "Azure App Service"),
+    (r"(?i)\.azureedge\.net$",                                               "Azure CDN"),
+    (r"(?i)\.trafficmanager\.net$",                                          "Azure Traffic Manager"),
+    (r"(?i)\.azure-api\.net$",                                               "Azure API Management"),
+    (r"(?i)\.azurefd\.net$",                                                 "Azure Front Door"),
+    (r"(?i)\.cloudapp\.net$",                                                "Azure Cloud Services"),
+    (r"(?i)\.blob\.core\.windows\.net$",                                     "Azure Blob Storage"),
+    # GCP
+    (r"(?i)\.appspot\.com$",                                                 "Google App Engine"),
+    (r"(?i)\.firebaseio\.com$",                                              "Firebase"),
+    (r"(?i)\.firebaseapp\.com$",                                             "Firebase Hosting"),
+    (r"(?i)\.storage\.googleapis\.com$",                                     "Google Cloud Storage"),
+    (r"(?i)\.run\.app$",                                                     "Google Cloud Run"),
+    (r"(?i)\.cloudfunctions\.net$",                                          "Google Cloud Functions"),
+    # Other clouds
+    (r"(?i)\.herokuapp\.com$",                                               "Heroku"),
+    (r"(?i)\.netlify\.com$",                                                 "Netlify"),
+    (r"(?i)\.netlify\.app$",                                                 "Netlify"),
+    (r"(?i)\.vercel\.app$",                                                  "Vercel"),
+    (r"(?i)\.pages\.dev$",                                                   "Cloudflare Pages"),
+    (r"(?i)\.workers\.dev$",                                                 "Cloudflare Workers"),
+    (r"(?i)\.fly\.dev$",                                                     "Fly.io"),
+    (r"(?i)\.fly\.io$",                                                      "Fly.io"),
+    (r"(?i)\.pantheonsite\.io$",                                             "Pantheon"),
+    (r"(?i)\.kinsta\.cloud$",                                                "Kinsta"),
+    # CDN / DNS
+    (r"(?i)\.cdn\.ampproject\.org$",                                         "AMP Cache"),
+    (r"(?i)\.myshopify\.com$",                                               "Shopify"),
+    (r"(?i)\.shopify\.com$",                                                 "Shopify"),
+    (r"(?i)\.wordpress\.com$",                                               "WordPress.com"),
+    (r"(?i)\.wpengine\.com$",                                                "WP Engine"),
+    (r"(?i)\.ghost\.io$",                                                    "Ghost"),
+    (r"(?i)\.helpscoutdocs\.com$",                                           "Help Scout"),
+    (r"(?i)\.zendesk\.com$",                                                 "Zendesk"),
+    (r"(?i)\.freshdesk\.com$",                                               "Freshdesk"),
+    (r"(?i)\.unbouncepages\.com$",                                           "Unbounce"),
+    (r"(?i)\.instapage\.com$",                                               "Instapage"),
+    (r"(?i)\.launchdarkly\.com$",                                            "LaunchDarkly"),
+    (r"(?i)\.strikingly\.com$",                                              "Strikingly"),
+    (r"(?i)\.squarespace\.com$",                                             "Squarespace"),
+    (r"(?i)\.wixsite\.com$",                                                 "Wix"),
+    (r"(?i)\.wix\.com$",                                                     "Wix"),
+    (r"(?i)\.webflow\.io$",                                                  "Webflow"),
+    (r"(?i)\.webflow\.app$",                                                 "Webflow"),
+    (r"(?i)\.teamwork\.com$",                                                "Teamwork"),
+    (r"(?i)\.atlassian\.net$",                                               "Atlassian"),
+    (r"(?i)\.statuspage\.io$",                                               "Statuspage"),
+    (r"(?i)\.status\.page\.io$",                                             "Statuspage (ex-Bitbucket)"),
+    (r"(?i)\.cargocollective\.com$",                                         "Cargo Collective"),
+    (r"(?i)\.tictail\.com$",                                                 "Tictail"),
+    (r"(?i)\.surge\.sh$",                                                    "Surge.sh"),
+    (r"(?i)\.bitbucket\.io$",                                                "Bitbucket Pages"),
+    (r"(?i)\.gitlab\.io$",                                                   "GitLab Pages"),
+    (r"(?i)\.github\.io$",                                                   "GitHub Pages"),
+    (r"(?i)\.readthedocs\.io$",                                              "Read the Docs"),
+    (r"(?i)\.readthedocs\.org$",                                             "Read the Docs"),
+    (r"(?i)\.pythonanywhere\.com$",                                          "PythonAnywhere"),
+    (r"(?i)\.repl\.co$",                                                     "Replit"),
+    (r"(?i)\.glitch\.me$",                                                   "Glitch"),
+    (r"(?i)\.codepen\.io$",                                                  "CodePen"),
+    (r"(?i)\.ngrok\.io$",                                                    "ngrok"),
+    (r"(?i)\.ngrok\.app$",                                                   "ngrok"),
+    (r"(?i)\.trycloudflare\.com$",                                           "Cloudflare Tunnel"),
+    (r"(?i)\.loca\.lt$",                                                     "localtunnel"),
+    (r"(?i)\.serveo\.net$",                                                  "Serveo"),
+    # Known vulnerable patterns
+    (r"(?i)\.desk\.com$",                                                    "Desk.com"),
+    (r"(?i)\.zendesk\.com$",                                                 "Zendesk"),
+    (r"(?i)\.fastly\.net$",                                                  "Fastly"),
+    (r"(?i)\.helpjuice\.com$",                                               "Helpjuice"),
+    (r"(?i)\.helpscout\.net$",                                               "Help Scout"),
+    (r"(?i)\.uservoice\.com$",                                               "UserVoice"),
+    (r"(?i)\.intercom\.io$",                                                 "Intercom"),
+    (r"(?i)\.tawk\.to$",                                                     "Tawk.to"),
+    (r"(?i)\.smartsheet\.com$",                                              "Smartsheet"),
+    (r"(?i)\.freshservice\.com$",                                            "Freshservice"),
+    (r"(?i)\.com$",                                                          "Unmanaged CNAME"),  # fallback for checking any unmanaged CNAME
+]
+
+
+# ─── Subdomain Scanner ─────────────────────────────────────────────────────────
+
+class SubdomainScanner:
+    """
+    Discovers subdomains via:
+      1) Certificate Transparency (crt.sh) — passive, no API key
+      2) DNS brute-force with configurable wordlist
+      3) DNS resolution to find live hosts
+      4) HTTP probe on resolved hosts
+      5) CNAME-based takeover detection
+    """
+
+    def __init__(self, domain, session, concurrency=100, timeout=5, waf_evasion=False,
+                 delay=0, verbose=False, wordlist=None, brute_force=False):
+        self.domain = domain.lower().strip()
+        # Strip protocol if someone passes https://target.com
+        if "://" in self.domain:
+            self.domain = urlparse(self.domain).netloc or self.domain.split("://")[1]
+        # Remove trailing slash, path, port
+        self.domain = self.domain.split("/")[0].split(":")[0]
+
+        self.session = session
+        self.concurrency = concurrency
+        self.timeout = timeout
+        self.waf_evasion = waf_evasion
+        self.delay = delay
+        self.verbose = verbose
+        self.custom_wordlist = wordlist
+        self.do_brute = brute_force
+
+        self.subdomains = set()       # all unique subdomains discovered
+        self.resolved = {}            # subdomain -> list of IPs
+        self.cname_records = {}       # subdomain -> CNAME target
+        self.live_http = {}           # subdomain -> (status, title, tech)
+        self.takeover_candidates = [] # subdomains potentially vulnerable
+        self.scanned_hosts = []       # full URLs for the main scanner
+
+    async def query_crtsh(self, semaphore):
+        """Query Certificate Transparency logs via crt.sh API."""
+        info(f"Querying crt.sh for *.{self.domain}...")
+        url = f"https://crt.sh/?q=%25.{self.domain}&output=json"
+        results = []
+        try:
+            async with semaphore:
+                await evasion_delay(self.delay, self.waf_evasion)
+                headers = evasion_headers(self.waf_evasion, {"Accept": "application/json"})
+                async with self.session.get(url, headers=headers, ssl=False, timeout=aiohttp.ClientTimeout(total=30)) as r:
+                    if r.status == 200:
+                        text = await r.text()
+                        try:
+                            certs = json.loads(text)
+                        except json.JSONDecodeError:
+                            warn(f"crt.sh returned non-JSON response (length={len(text)})")
+                            return
+                        for cert in certs:
+                            name_value = cert.get("name_value", "")
+                            for sub in name_value.split("\n"):
+                                sub = sub.strip().lower()
+                                # Filter wildcards, the domain itself, and empty
+                                if sub and "*" not in sub and sub != self.domain:
+                                    # Ensure it ends with the target domain
+                                    if sub.endswith("." + self.domain) or sub.endswith(self.domain):
+                                        results.append(sub)
+                    else:
+                        warn(f"crt.sh returned HTTP {r.status}")
+        except asyncio.TimeoutError:
+            warn("crt.sh query timed out")
+        except Exception as e:
+            warn(f"crt.sh error: {e}")
+
+        # Deduplicate
+        for sub in results:
+            self.subdomains.add(sub)
+        ok(f"crt.sh: {len(results)} subdomains found")
+
+    async def query_crtsh_identity(self, semaphore):
+        """Also query identity subdomains via crt.sh with SAN parsing."""
+        # Some subdomains only appear in SAN, not name_value
+        url = f"https://crt.sh/?q=%25.{self.domain}&output=json&excluded=expired"
+        try:
+            async with semaphore:
+                await evasion_delay(self.delay, self.waf_evasion)
+                headers = evasion_headers(self.waf_evasion, {"Accept": "application/json"})
+                async with self.session.get(url, headers=headers, ssl=False, timeout=aiohttp.ClientTimeout(total=30)) as r:
+                    if r.status == 200:
+                        text = await r.text()
+                        try:
+                            certs = json.loads(text)
+                        except json.JSONDecodeError:
+                            return
+                        for cert in certs:
+                            for field in ("name_value", "common_name", "issuer_name"):
+                                val = cert.get(field, "")
+                                if isinstance(val, str) and self.domain in val.lower():
+                                    for sub in val.replace("\n", " ").split():
+                                        sub = sub.strip().lower().rstrip(".")
+                                        if sub and "*" not in sub and sub.endswith(self.domain) and sub != self.domain:
+                                            self.subdomains.add(sub)
+        except Exception:
+            pass
+
+    async def try_dns_resolve(self, hostname, semaphore):
+        """Resolve a hostname to IPs and check CNAME."""
+        try:
+            # We use asyncio's event loop's getaddrinfo for non-blocking DNS
+            loop = asyncio.get_event_loop()
+            ips = await loop.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+            addresses = list(set(info[4][0] for info in ips))
+            self.resolved[hostname] = addresses
+            return True
+        except socket.gaierror:
+            return False
+        except Exception:
+            return False
+
+    async def try_dns_resolve_with_cname(self, hostname, semaphore):
+        """Resolve and capture CNAME for takeover detection."""
+        try:
+            loop = asyncio.get_event_loop()
+            ips = await loop.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+            addresses = list(set(info[4][0] for info in ips))
+            self.resolved[hostname] = addresses
+            return True
+        except socket.gaierror:
+            # Even on NXDOMAIN, try to get CNAME if there's a SERVFAIL or no A record
+            # We can't easily get CNAME from getaddrinfo, so use aiohttp's DNS or skip
+            # We'll catch CNAME in the HTTP probe phase via response inspection
+            return False
+        except Exception:
+            return False
+
+    async def brute_force_subdomains(self, semaphore):
+        """Brute-force subdomains using wordlist."""
+        wordlist = self.custom_wordlist or SUBDOMAIN_WORDLIST
+        info(f"Brute-forcing subdomains with {len(wordlist)} names...")
+
+        resolved_count = 0
+        total = len(wordlist)
+
+        # We need to rate-limit DNS queries to avoid being blocked
+        dns_sem = asyncio.Semaphore(50)
+
+        async def try_sub(word):
+            hostname = f"{word}.{self.domain}"
+            if hostname in self.subdomains:
+                return  # Already known from crt.sh
+            async with dns_sem:
+                try:
+                    loop = asyncio.get_event_loop()
+                    ips = await loop.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+                    addresses = list(set(info[4][0] for info in ips))
+                    self.subdomains.add(hostname)
+                    self.resolved[hostname] = addresses
+                    return hostname, addresses
+                except (socket.gaierror, OSError):
+                    return None
+                except Exception:
+                    return None
+
+        # Process in chunks to show progress
+        chunk_size = 200
+        found_any = False
+        for i in range(0, total, chunk_size):
+            chunk = wordlist[i:i+chunk_size]
+            tasks = [try_sub(w) for w in chunk]
+            results = await asyncio.gather(*tasks)
+            chunk_found = sum(1 for r in results if r is not None)
+            resolved_count += chunk_found
+            if chunk_found > 0:
+                found_any = True
+            if self.verbose or (chunk_found > 0 and i % 1000 == 0):
+                pct = min(100, (i + chunk_size) / total * 100)
+                info(f"DNS brute-force: {i+len(chunk)}/{total} ({pct:.0f}%) — {resolved_count} resolved so far")
+
+        if found_any:
+            ok(f"DNS brute-force: {resolved_count} new subdomains resolved")
+
+    async def dns_resolve_all(self, semaphore):
+        """Resolve all un-resolved subdomains discovered via crt.sh."""
+        to_resolve = [s for s in self.subdomains if s not in self.resolved]
+        if not to_resolve:
+            return
+
+        info(f"Resolving {len(to_resolve)} subdomains...")
+        dns_sem = asyncio.Semaphore(100)
+
+        async def resolve_one(hostname):
+            async with dns_sem:
+                try:
+                    loop = asyncio.get_event_loop()
+                    ips = await loop.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+                    addresses = list(set(info[4][0] for info in ips))
+                    self.resolved[hostname] = addresses
+                except socket.gaierror:
+                    pass  # unresolvable, don't add
+                except Exception:
+                    pass
+
+        tasks = [resolve_one(s) for s in to_resolve]
+        await asyncio.gather(*tasks)
+        resolved_now = sum(1 for s in to_resolve if s in self.resolved)
+        ok(f"DNS resolution: {resolved_now}/{len(to_resolve)} live")
+
+    async def http_probe(self, semaphore):
+        """Probe resolved subdomains over HTTP/HTTPS to find live web services."""
+        to_probe = list(self.resolved.keys())
+        if not to_probe:
+            return
+
+        info(f"HTTP probing {len(to_probe)} live subdomains...")
+
+        async def probe_one(hostname):
+            for scheme in ("https", "http"):
+                url = f"{scheme}://{hostname}"
+                try:
+                    async with semaphore:
+                        await evasion_delay(self.delay, self.waf_evasion)
+                        async with self.session.get(
+                            url, ssl=False, allow_redirects=True,
+                            timeout=aiohttp.ClientTimeout(total=self.timeout),
+                            headers=evasion_headers(self.waf_evasion)
+                        ) as r:
+                            status = r.status
+                            # Try to get page title
+                            body = await r.text(errors="ignore")
+                            title_match = re.search(r'<title[^>]*>(.*?)</title>', body, re.I | re.S)
+                            title = title_match.group(1).strip()[:80] if title_match else ""
+                            # Detect server tech
+                            tech = []
+                            server = r.headers.get("Server", "")
+                            if server:
+                                tech.append(server)
+                            xpb = r.headers.get("X-Powered-By", "")
+                            if xpb:
+                                tech.append(xpb)
+                            # Check CNAME from headers / redirects
+                            cname = None
+                            redirect_url = str(r.url)
+                            if redirect_url != url:
+                                parsed = urlparse(redirect_url)
+                                if parsed.netloc != hostname:
+                                    cname = parsed.netloc
+
+                            self.live_http[hostname] = {
+                                "status": status,
+                                "title": title,
+                                "tech": tech,
+                                "final_url": redirect_url,
+                                "scheme": scheme,
+                            }
+                            # Build scan targets for APIHawk main scanner
+                            self.scanned_hosts.append(url)
+
+                            tech_str = f" | {', '.join(tech)}" if tech else ""
+                            title_str = f" — {title}" if title else ""
+                            # Color by status
+                            if 200 <= status < 300:
+                                ok(f"[{status}] {url}{title_str}{tech_str}")
+                            elif 300 <= status < 400:
+                                warn(f"[{status}] {url} -> {redirect_url}{title_str}")
+                            elif 400 <= status < 500:
+                                warn(f"[{status}] {url}{title_str}{tech_str} (auth required, possible endpoint)")
+                            elif status >= 500:
+                                bad(f"[{status}] {url}{title_str}{tech_str}")
+                            return url, status, title, tech
+                except asyncio.TimeoutError:
+                    if self.verbose:
+                        bad(f"[TIMEOUT] {url}")
+                except (aiohttp.ClientError, asyncio.TimeoutError, Exception):
+                    pass
+            return None
+
+        tasks = [probe_one(h) for h in to_probe]
+        results = await asyncio.gather(*tasks)
+        live_count = sum(1 for r in results if r is not None)
+        ok(f"HTTP probe: {live_count}/{len(to_probe)} respond to HTTP(S)")
+
+        # Print summary
+        if live_count > 0:
+            print(f"\n{C.BOLD}  Live Subdomains Summary:{C.RESET}")
+            print(f"  {'─'*60}")
+            for hostname in sorted(self.live_http.keys()):
+                info = self.live_http[hostname]
+                tech = " | ".join(info["tech"]) if info["tech"] else "—"
+                status = info["status"]
+                color = C.GREEN if 200 <= status < 300 else C.YELLOW if status < 400 else C.RED
+                print(f"  {color}{info['scheme']}://{hostname}{C.RESET}")
+                print(f"     Status: {status} | Title: {info['title'][:60] or '—'} | Tech: {tech}")
+
+    async def check_takeover(self, semaphore):
+        """
+        Check for subdomain takeover by examining CNAME records.
+        We check if the CNAME target matches known services and if the
+        HTTP response indicates an unclaimed resource.
+        """
+        takeover_checks = []
+
+        # For each live subdomain that redirected to a different host
+        for hostname, info in self.live_http.items():
+            final_url = info.get("final_url", "")
+            if final_url:
+                final_host = urlparse(final_url).netloc
+                if final_host and final_host != hostname:
+                    takeover_checks.append((hostname, final_host, info))
+
+        # Also check any subdomain we couldn't resolve (NXDOMAIN) but was discovered
+        # — these are prime takeover candidates if they have CNAME records to unclaimed services
+        unresolved = [s for s in self.subdomains if s not in self.resolved]
+        for hostname in unresolved[:100]:  # limit to first 100
+            # Check if there's a CNAME by trying to resolve a CNAME
+            # We'll do this via simple heuristic: try to getaddrinfo and if
+            # we get SERVFAIL vs NXDOMAIN, one might have a dangling CNAME
+            takeover_checks.append((hostname, None, None))
+
+        # For live hosts, check body content for known unclaimed patterns
+        takeover_fingerprints_body = [
+            (r"(?i)no such bucket",                             "AWS S3"),
+            (r"(?i)the specified bucket does not exist",         "AWS S3"),
+            (r"(?i)404 Not Found.*Code.*NoSuchBucket",           "AWS S3"),
+            (r"(?i)there is no app hosted at this address",      "Heroku"),
+            (r"(?i)something went wrong.*no app configured",     "Heroku"),
+            (r"(?i)application not found",                       "Heroku"),
+            (r"(?i)heroku.*no such app",                         "Heroku"),
+            (r"(?i)404.*page not found.*azure",                  "Azure"),
+            (r"(?i)the site you are looking for does not exist",  "Azure"),
+            (r"(?i)404.*not found.*azurewebsites",               "Azure App Service"),
+            (r"(?i)this virtual machine doesn't exist",          "Azure Cloud Services"),
+            (r"(?i)there is no site configured",                 "IIS / Azure"),
+            (r"(?i)404.*file not found.*firebase",               "Firebase"),
+            (r"(?i)project not found",                           "Firebase"),
+            (r"(?i)not found.*firebaseio",                       "Firebase Realtime DB"),
+            (r"(?i)hosting.*not found",                          "Firebase Hosting"),
+            (r"(?i)404.*not found.*appspot",                     "Google App Engine"),
+            (r"(?i)there is no such app",                        "Google App Engine"),
+            (r"(?i)not found.*cloudfront",                       "CloudFront"),
+            (r"(?i)bad request.*cloudfront",                     "CloudFront"),
+            (r"(?i)the request could not be satisfied",          "CloudFront"),
+            (r"(?i)cdn.*not found",                              "Generic CDN"),
+            (r"(?i)no such site",                                "WordPress.com"),
+            (r"(?i)doesn't exist.*wordpress",                    "WordPress.com"),
+            (r"(?i)this site is no longer available",            "WordPress.com"),
+            (r"(?i)there is no site here",                       "Shopify"),
+            (r"(?i)shopify.*not found",                          "Shopify"),
+            (r"(?i)not found.*shopify",                          "Shopify"),
+            (r"(?i)page not found.*netlify",                     "Netlify"),
+            (r"(?i)not found.*netlify",                          "Netlify"),
+            (r"(?i)deploy.*not found",                           "Vercel"),
+            (r"(?i)vercel.*404",                                 "Vercel"),
+            (r"(?i)this page is not found",                      "GitHub Pages"),
+            (r"(?i)404.*github.*pages",                          "GitHub Pages"),
+            (r"(?i)there is no such page",                       "GitLab Pages"),
+            (r"(?i)page not found.*gitlab",                      "GitLab Pages"),
+            (r"(?i)bitbucket.*not found",                        "Bitbucket Pages"),
+            (r"(?i)repository not found",                        "Bitbucket"),
+            (r"(?i)project not found.*readthedocs",              "Read the Docs"),
+            (r"(?i)page not found.*surge",                       "Surge.sh"),
+            (r"(?i)project not found.*pythonanywhere",           "PythonAnywhere"),
+            (r"(?i)this page is unavailable",                    "Pantheon"),
+            (r"(?i)pantheon.*not found",                         "Pantheon"),
+            (r"(?i)no such app.*fly\.io",                        "Fly.io"),
+            (r"(?i)not found.*fly\.io",                          "Fly.io"),
+            (r"(?i)page not found.*wix",                         "Wix"),
+            (r"(?i)wix.*not found",                              "Wix"),
+            (r"(?i)site not found.*squarespace",                 "Squarespace"),
+            (r"(?i)squarespace.*not found",                      "Squarespace"),
+            (r"(?i)not found.*zendesk",                          "Zendesk"),
+            (r"(?i)this help site is not available",             "Zendesk"),
+            (r"(?i)not found.*freshdesk",                        "Freshdesk"),
+            (r"(?i)this page is gone",                           "Tumblr"),
+            (r"(?i)there's nothing here.*tumblr",                "Tumblr"),
+            (r"(?i)unbounce.*not found",                         "Unbounce"),
+            (r"(?i)this site is not configured",                 "Fastly"),
+            (r"(?i)fastly.*error.*not found",                    "Fastly"),
+            (r"(?i)domain not configured",                       "Kinsta"),
+            (r"(?i)the page you are looking for was not found",  "Ghost"),
+            (r"(?i)page not found.*ghost",                       "Ghost"),
+            (r"(?i)404.*not found",                              "Generic 404 — check manually"),
+        ]
+
+        for hostname in list(self.live_http.keys()):
+            try:
+                async with semaphore:
+                    await evasion_delay(self.delay, self.waf_evasion)
+                    url = f"{self.live_http[hostname]['scheme']}://{hostname}/"
+                    async with self.session.get(
+                        url, ssl=False, allow_redirects=True,
+                        timeout=aiohttp.ClientTimeout(total=self.timeout),
+                        headers=evasion_headers(self.waf_evasion)
+                    ) as r:
+                        body = await r.text(errors="ignore")
+                        for pattern, service in takeover_fingerprints_body:
+                            if re.search(pattern, body):
+                                candidate = {
+                                    "hostname": hostname,
+                                    "service": service,
+                                    "pattern": pattern,
+                                    "status": r.status,
+                                    "body_snippet": body[:300] if len(body) > 300 else body,
+                                }
+                                self.takeover_candidates.append(candidate)
+                                print(f"\n{C.RED}{C.BOLD}[TAKEOVER] {hostname} may be vulnerable to {service}!{C.RESET}")
+                                print(f"            Status: {r.status}")
+                                print(f"            Match : {pattern}\n")
+                                break
+            except Exception:
+                pass
+
+        if self.takeover_candidates:
+            warn(f"Found {len(self.takeover_candidates)} potential subdomain takeover candidates")
+        else:
+            ok("No obvious subdomain takeover indicators detected")
+
+    async def run(self):
+        """Execute the full subdomain discovery pipeline."""
+        banner_sub()
+
+        info(f"Subdomain Recon Target: {self.domain}")
+        print()
+
+        sem = asyncio.Semaphore(self.concurrency)
+
+        # Phase S0: Certificate Transparency (passive, no fingerprint)
+        await self.query_crtsh(sem)
+        await self.query_crtsh_identity(sem)
+        print()
+
+        # Phase S1: DNS brute-force (if enabled)
+        if self.do_brute or self.custom_wordlist:
+            await self.brute_force_subdomains(sem)
+            print()
+
+        # Phase S2: DNS resolution for all discovered subdomains
+        await self.dns_resolve_all(sem)
+        print()
+
+        # Print subdomain stats
+        info(f"Subdomains discovered: {len(self.subdomains)}")
+        info(f"Resolved (live DNS)   : {len(self.resolved)}")
+        print()
+
+        if self.resolved:
+            # Phase S3: HTTP(S) probe
+            await self.http_probe(sem)
+            print()
+
+            # Phase S4: Subdomain takeover checks
+            await self.check_takeover(sem)
+            print()
+
+        # Print final summary
+        self.print_summary()
+        return {
+            "domain": self.domain,
+            "subdomains": sorted(self.subdomains),
+            "resolved": {k: v for k, v in self.resolved.items()},
+            "live_http": self.live_http,
+            "takeover_candidates": self.takeover_candidates,
+            "scanned_hosts": self.scanned_hosts,
+        }
+
+    def print_summary(self):
+        banner_line()
+        print(f"{C.BOLD}  SUBDOMAIN RECON SUMMARY{C.RESET}")
+        banner_line()
+        print(f"  Target domain       : {self.domain}")
+        print(f"  Subdomains found    : {len(self.subdomains)}")
+        print(f"  DNS-resolved        : {len(self.resolved)}")
+        print(f"  HTTP(S) live        : {len(self.live_http)}")
+        print(f"  Takeover candidates : {len(self.takeover_candidates)}")
+        print()
+
+        if self.takeover_candidates:
+            print(f"{C.RED}{C.BOLD}  ⚠ Potential Takeover Targets:{C.RESET}")
+            for c in self.takeover_candidates:
+                print(f"    {c['hostname']} — {c['service']}")
+            print()
+
+        if self.live_http:
+            print(f"{C.GREEN}{C.BOLD}  Live Endpoints:{C.RESET}")
+            for hostname, info in sorted(self.live_http.items()):
+                status = info["status"]
+                color = C.GREEN if 200 <= status < 300 else C.YELLOW if status < 400 else C.RED
+                title = info.get("title", "")[:50]
+                tech = " | ".join(info.get("tech", [])) if info.get("tech") else ""
+                print(f"    {color}{info['scheme']}://{hostname}{C.RESET} [{status}] {title}")
+                if tech:
+                    print(f"      └─ {tech}")
+        banner_line()
+
+
+def banner_sub():
+    print(C.CYAN + C.BOLD + """
+  ╔══════════════════════════════════════════════╗
+  ║      SUBHawk — Subdomain Recon Engine         ║
+  ║  CT Logs · DNS Brute-force · HTTP Probe       ║
+  ║  Takeover Detection · Auto-feed to APIHawk    ║
+  ╚══════════════════════════════════════════════╝
+""" + C.RESET)
+
+
+def banner_line():
+    print(f"{C.BOLD}{'─'*60}{C.RESET}")
+
+
 # ─── JS Scraper ────────────────────────────────────────────────────────────────
 
 class JSScraper:
@@ -242,7 +1127,6 @@ class JSScraper:
             async with self.session.get(self.target, ssl=False,
                                          headers=evasion_headers(self.waf_evasion)) as r:
                 html = await r.text()
-                # Find all .js files referenced
                 js_refs = re.findall(r'src=["\']([^"\']+\.js[^"\']*)["\']', html)
                 for ref in js_refs:
                     if ref.startswith("http"):
@@ -278,17 +1162,14 @@ class JSScraper:
                 size_kb = len(content) // 1024
                 info(f"Scraping {js_url} ({size_kb}KB)")
 
-                # ── Extract API endpoints ──
                 for pattern in JS_ENDPOINT_PATTERNS:
                     matches = re.findall(pattern, content)
                     for match in matches:
                         m = match.strip()
-                        # Filter out noise
                         if len(m) < 4 or len(m) > 200:
                             continue
                         if m.startswith("http"):
                             parsed = urlparse(m)
-                            # Separate external URLs (different domain = backend candidate)
                             target_host = urlparse(self.target).netloc
                             if parsed.netloc and parsed.netloc != target_host:
                                 self.external_urls.add(m.split("?")[0])
@@ -300,12 +1181,10 @@ class JSScraper:
                             if m not in self.endpoints_found:
                                 self.endpoints_found.add(m)
 
-                # ── Detect secrets ──
                 for pattern, label in JS_SECRET_PATTERNS:
                     matches = re.findall(pattern, content, re.IGNORECASE)
                     for match in matches:
                         val = match if isinstance(match, str) else match[0]
-                        # Skip obvious placeholders
                         if any(p in val.lower() for p in ["your_", "xxx", "example", "placeholder", "undefined", "process.env"]):
                             continue
                         finding = {
@@ -333,7 +1212,6 @@ class JSScraper:
         tasks = [self.scrape_js_file(url) for url in self.js_files]
         await asyncio.gather(*tasks)
 
-        # Print results
         print()
         if self.endpoints_found:
             ok(f"JS Scraper found {len(self.endpoints_found)} endpoint(s):")
@@ -362,7 +1240,8 @@ class JSScraper:
 
 class APIHawk:
     def __init__(self, target, concurrency=50, timeout=8, verbose=False, js_only=False,
-                 waf_evasion=False, delay=0):
+                 waf_evasion=False, delay=0, subdomain_scan=False, subdomain_brute=False,
+                 subdomain_wordlist=None, no_subscan=False):
         self.target        = target.rstrip("/")
         self.concurrency   = concurrency
         self.timeout       = aiohttp.ClientTimeout(total=timeout)
@@ -374,11 +1253,16 @@ class APIHawk:
         self.found_graphql = []
         self.vulns         = []
         self.js_results    = {}
-        self.spa_fingerprint = None  # (status, content_length, content_hash)
+        self.spa_fingerprint = None
         self.fingerprint   = {}
+        self.subdomain_scan = subdomain_scan
+        self.subdomain_brute = subdomain_brute
+        self.subdomain_wordlist = subdomain_wordlist
+        self.no_subscan = no_subscan
+        self.subdomain_results = {}
+        self.all_targets = [self.target]  # includes subdomain results
 
     async def probe(self, session, path, semaphore):
-        # encoded=True preserves %2F so WAF-evasion URL variants reach the server intact.
         url = URL(urljoin(self.target, path), encoded=True)
         async with semaphore:
             await evasion_delay(self.delay, self.waf_evasion)
@@ -389,9 +1273,7 @@ class APIHawk:
                     cl = r.headers.get("Content-Length", "?")
 
                     if status in (200, 201, 204):
-                        # Filter SPA false positives
                         if self.spa_fingerprint:
-                            import hashlib
                             body = await r.read()
                             h = hashlib.md5(body).hexdigest()
                             spa_status, spa_len, spa_hash = self.spa_fingerprint
@@ -442,13 +1324,7 @@ class APIHawk:
             except Exception:
                 pass
 
-
     async def detect_spa(self, session):
-        """
-        Probe a guaranteed non-existent path to fingerprint the SPA fallback.
-        If the server returns 200 for a random path, it's a SPA catch-all.
-        We record the response size + hash to filter false positives later.
-        """
         import hashlib
         test_url = urljoin(self.target, "/apihawk-test-nonexistent-path-xyz123")
         try:
@@ -566,10 +1442,6 @@ class APIHawk:
             pass
 
     async def fingerprint_target(self, session):
-        """
-        GET the root URL and infer server, framework, CDN/WAF, runtime, and
-        framework-specific session cookies from response headers.
-        """
         result = {
             "server": None,
             "framework": None,
@@ -584,7 +1456,6 @@ class APIHawk:
                                     headers=evasion_headers(self.waf_evasion)) as r:
                 headers = {k.lower(): v for k, v in r.headers.items()}
 
-                # ── Server ──
                 server_hdr = headers.get("server", "")
                 if server_hdr:
                     sl = server_hdr.lower()
@@ -596,7 +1467,6 @@ class APIHawk:
                     if not result["server"]:
                         result["server"] = server_hdr
 
-                # ── Framework / Runtime via X-Powered-By ──
                 xpb = headers.get("x-powered-by", "")
                 if xpb:
                     xl = xpb.lower()
@@ -623,11 +1493,9 @@ class APIHawk:
                     elif "asp.net" in xl:
                         result["runtime"] = ".NET"
 
-                # ── Runtime via X-Runtime (Rails-ish) ──
                 if not result["runtime"] and "x-runtime" in headers:
                     result["runtime"] = "Ruby (X-Runtime present)"
 
-                # ── CDN / WAF ──
                 if "cf-ray" in headers or "cf-cache-status" in headers:
                     result["cdn_waf"].append("Cloudflare")
                 if "x-cache" in headers:
@@ -651,7 +1519,6 @@ class APIHawk:
                 if "x-akamai-transformed" in headers or "akamai-grn" in headers:
                     result["cdn_waf"].append("Akamai")
 
-                # ── Cookies ──
                 cookie_map = {
                     "PHPSESSID": "PHP",
                     "JSESSIONID": "Java (Servlet/JSP)",
@@ -692,7 +1559,6 @@ class APIHawk:
             self.fingerprint = result
             return
 
-        # ── Print results ──
         any_found = (result["server"] or result["framework"]
                      or result["cdn_waf"] or result["runtime"] or result["cookies"])
         if not any_found:
@@ -713,167 +1579,342 @@ class APIHawk:
 
         self.fingerprint = result
 
-    async def run(self):
-        banner()
-        info(f"Target     : {self.target}")
-        info(f"Concurrency: {self.concurrency} workers")
-        if self.waf_evasion:
-            warn("WAF evasion ON: rotating UA/IP, randomizing headers, jittering requests, probing %2F variants")
-        if self.delay > 0:
-            info(f"Fixed delay: {self.delay}s between requests")
+    async def run_scan_on_target(self, session, target_url, target_label):
+        """Run full API endpoint + GraphQL + vuln scan on a single target."""
+        original_target = self.target
+        self.target = target_url.rstrip("/")
+
+        print(f"\n{C.BOLD}{'═'*60}{C.RESET}")
+        print(f"{C.BOLD}  Scanning: {target_label}{C.RESET}")
+        print(f"{'═'*60}\n")
+
+        # Phase SPA detection
+        await self.detect_spa(session)
         print()
 
-        connector = aiohttp.TCPConnector(ssl=False, limit=self.concurrency)
+        # Phase 1: API endpoint discovery
+        semaphore = asyncio.Semaphore(self.concurrency)
+        all_paths = API_PATHS
+        if self.waf_evasion:
+            variants = encoded_path_variants(all_paths)
+            if variants:
+                all_paths = all_paths + variants
+        info(f"Phase 1: API endpoint discovery ({len(all_paths)} paths)...")
+        tasks = [self.probe(session, path, semaphore) for path in all_paths]
+        await asyncio.gather(*tasks)
 
-        async with aiohttp.ClientSession(
-            connector=connector,
-            timeout=self.timeout,
-        ) as session:
-
-            # ── Phase 0: JS Scraping ──
-            scraper = JSScraper(self.target, session,
-                                waf_evasion=self.waf_evasion, delay=self.delay)
-            self.js_results = await scraper.run() or {}
-
-            if self.js_only:
-                self.report()
-                return
-
-            # Add JS-discovered endpoints to scan list
-            extra_paths = []
-            if self.js_results:
-                extra_paths = [ep for ep in self.js_results.get("endpoints", [])
-                               if ep not in API_PATHS + GRAPHQL_PATHS]
-                if extra_paths:
-                    info(f"Adding {len(extra_paths)} JS-discovered paths to scan")
-
-            # ── SPA Detection ──
-            await self.detect_spa(session)
-            print()
-
-            # ── Phase 1: Discover API endpoints ──
-            semaphore = asyncio.Semaphore(self.concurrency)
-            all_paths = API_PATHS + extra_paths
-            if self.waf_evasion:
-                variants = encoded_path_variants(all_paths)
-                if variants:
-                    info(f"WAF evasion: adding {len(variants)} %2F-encoded path variants")
-                    all_paths = all_paths + variants
-            info(f"Phase 1: Discovering API endpoints ({len(all_paths)} paths)...")
-            tasks = [self.probe(session, path, semaphore) for path in all_paths]
+        # Phase 1b: POST probing on 405s
+        method_not
+     # Phase 1b: POST probing on 405s
+        post_targets = [a for a in self.found_apis if a.get("status") == 405]
+        if post_targets:
+            info(f"POST probing {len(post_targets)} endpoints returning 405...")
+            post_sem = asyncio.Semaphore(min(self.concurrency, 10))
+            tasks = [self.probe_post(session, a["url"], post_sem) for a in post_targets]
             await asyncio.gather(*tasks)
+        print()
 
-            # ── Phase 1b: POST probing on 405 results ──
-            method_not_allowed = [e["url"] for e in self.found_apis if e["status"] == 405]
-            if method_not_allowed:
+        # Phase 2: GraphQL detection
+        graphql_check_paths = []
+        for path in GRAPHQL_PATHS:
+            full_url = urljoin(self.target, path)
+            graphql_check_paths.append(full_url)
+        graphql_check_paths = list(set(graphql_check_paths))
+        info(f"Phase 2: GraphQL detection ({len(graphql_check_paths)} paths)...")
+
+        async def graphql_probe(path_url, sem):
+            async with sem:
+                await evasion_delay(self.delay, self.waf_evasion)
+                try:
+                    async with session.post(
+                        URL(path_url, encoded=True), json={"query": "{__typename}"},
+                        ssl=False, headers=evasion_headers(self.waf_evasion, {"Content-Type": "application/json"})
+                    ) as r:
+                        if r.status != 200:
+                            return
+                        data = await r.json(content_type=None)
+                        if data.get("data") is not None:
+                            ok(f"[GQL] {path_url}")
+                            self.found_graphql.append(path_url)
+                except Exception:
+                    pass
+
+        gql_sem = asyncio.Semaphore(self.concurrency)
+        gql_tasks = [graphql_probe(p, gql_sem) for p in graphql_check_paths]
+        await asyncio.gather(*gql_tasks)
+        print()
+
+        # Phase 3: Deep GraphQL vuln scanning
+        if self.found_graphql:
+            for gql_url in self.found_graphql:
+                info(f"Testing: {gql_url}")
+                await self.check_graphql_introspection(session, gql_url)
+                await self.check_graphql_debug_mode(session, gql_url)
                 print()
-                info(f"Phase 1b: POST probing {len(method_not_allowed)} endpoint(s) that returned 405...")
-                post_tasks = [self.probe_post(session, url, semaphore) for url in method_not_allowed]
-                await asyncio.gather(*post_tasks)
 
-            # ── Phase 2: Discover GraphQL endpoints ──
+        # Phase 4: Security checks on primary API endpoints
+        api_scan_targets = ([a["url"] for a in self.found_apis if a["status"] in (200, 201, 401, 403)]
+                            + self.found_graphql)
+        api_scan_targets = list(set(api_scan_targets))
+        if api_scan_targets:
+            info(f"Phase 4: Security checks on {len(api_scan_targets)} endpoints...")
+
+            cors_sem = asyncio.Semaphore(min(self.concurrency, 5))
+            auth_sem = asyncio.Semaphore(min(self.concurrency, 10))
+
+            cors_tasks = [self.check_cors(session, url) for url in api_scan_targets[:10]]
+            auth_tasks = [self.check_missing_auth_headers(session, url) for url in api_scan_targets[:10]]
+
+            await asyncio.gather(*cors_tasks, *auth_tasks)
             print()
-            info("Phase 2: Discovering GraphQL endpoints...")
-            gql_tasks = [self.probe(session, path, semaphore) for path in GRAPHQL_PATHS]
-            await asyncio.gather(*gql_tasks)
 
-            gql_keywords = ["graphql", "gql", "query", "playground", "graphiql", "altair"]
-            self.found_graphql = [
-                e for e in self.found_apis
-                if any(kw in e["url"].lower() for kw in gql_keywords)
-                and e["status"] in (200, 201, 405)
-            ]
+        # Restore original target
+        self.target = original_target
 
-            # ── Phase 3: GraphQL vulnerability checks ──
-            print()
-            if self.found_graphql:
-                info(f"Phase 3: Running GraphQL checks on {len(self.found_graphql)} endpoint(s)...")
-                for endpoint in self.found_graphql:
-                    await self.check_graphql_introspection(session, endpoint["url"])
-                    await self.check_graphql_debug_mode(session, endpoint["url"])
-            else:
-                info("Phase 3: Probing default GraphQL paths for vulns anyway...")
-                for path in ["/graphql", "/api/graphql"]:
-                    url = urljoin(self.target, path)
-                    await self.check_graphql_introspection(session, url)
+    async def run(self):
+        banner()
 
-            # ── Phase 4: Fingerprint + Header + CORS checks ──
-            print()
-            info("Phase 4: Fingerprinting target + checking CORS / security headers...")
+        info(f"Target : {self.target}")
+        info(f"Concurrency: {self.concurrency} | Timeout: {self.timeout.total}")
+        info(f"WAF Evasion: {'ON' if self.waf_evasion else 'OFF'} | Delay: {self.delay}s")
+        print()
+
+        async with aiohttp.ClientSession(timeout=self.timeout,
+                                          connector=aiohttp.TCPConnector(ssl=False)) as session:
+
+            # Phase 0: Subdomain recon (if enabled)
+            if self.subdomain_scan and not self.no_subscan:
+                domain = urlparse(self.target).netloc or self.target.split("://")[-1].split("/")[0]
+                scanner = SubdomainScanner(
+                    domain=domain,
+                    session=session,
+                    concurrency=self.concurrency,
+                    timeout=min(8, self.timeout.total),
+                    waf_evasion=self.waf_evasion,
+                    delay=self.delay,
+                    verbose=self.verbose,
+                    wordlist=self.subdomain_wordlist,
+                    brute_force=self.subdomain_brute,
+                )
+                self.subdomain_results = await scanner.run()
+
+                # Add subdomain HTTP hosts to the scanning queue
+                if scanner.scanned_hosts:
+                    # Scan the primary target first
+                    self.all_targets = [self.target]
+                    self.all_targets.extend(scanner.scanned_hosts)
+                print()
+
+            # Phase X: Fingerprint primary target
+            info("Phase 0: Target fingerprinting...")
             await self.fingerprint_target(session)
-            live_apis = [e for e in self.found_apis if e["status"] == 200][:5]
-            for endpoint in live_apis:
-                await self.check_cors(session, endpoint["url"])
-                await self.check_missing_auth_headers(session, endpoint["url"])
+            print()
 
-        self.report()
+            # JS Scraper (on primary target)
+            js = JSScraper(self.target, session, self.waf_evasion, self.delay)
+            self.js_results = await js.run()
 
-    def report(self):
-        print(f"\n{C.BOLD}{'─'*60}{C.RESET}")
-        print(f"{C.BOLD}  SCAN COMPLETE{C.RESET}")
-        print(f"{'─'*60}")
-        print(f"  JS files scraped  : {len(self.js_results.get('js_files', []))}")
-        print(f"  Endpoints from JS : {len(self.js_results.get('endpoints', []))}")
-        print(f"  External URLs     : {len(self.js_results.get('external_urls', []))}")
-        print(f"  Secrets in JS     : {len(self.js_results.get('secrets', []))}")
-        print(f"  Endpoints found   : {len(self.found_apis)}")
-        print(f"  GraphQL found     : {len(self.found_graphql)}")
-        print(f"  Vulnerabilities   : {len(self.vulns)}")
-        print(f"{'─'*60}\n")
+            # If subdomains found, also scrape JS on live subdomains
+            if self.subdomain_results and self.subdomain_results.get("live_http"):
+                sub_js_targets = list(self.subdomain_results["live_http"].keys())[:5]
+                for sub_host in sub_js_targets:
+                    scheme = self.subdomain_results["live_http"][sub_host]["scheme"]
+                    sub_js = JSScraper(f"{scheme}://{sub_host}", session,
+                                        self.waf_evasion, self.delay)
+                    sub_js_results = await sub_js.run()
+                    # Merge results
+                    if sub_js_results:
+                        if sub_js_results.get("endpoints"):
+                            js.endpoints_found.update(sub_js_results["endpoints"])
+                        if sub_js_results.get("secrets"):
+                            js.secrets_found.extend(sub_js_results["secrets"])
 
+            # Main scan — primary target
+            await self.run_scan_on_target(session, self.target, self.target)
+
+            # Also scan subdomains that returned 200/401/403
+            if self.subdomain_results and self.subdomain_results.get("live_http"):
+                sub_scan_targets = []
+                for hostname, info in self.subdomain_results["live_http"].items():
+                    if info["status"] in (200, 401, 403):
+                        url = f"{info['scheme']}://{hostname}"
+                        sub_scan_targets.append((url, hostname))
+
+                if sub_scan_targets:
+                    info(f"Scanning {len(sub_scan_targets)} live subdomains for APIs/GQL...")
+                    for url, label in sub_scan_targets:
+                        await self.run_scan_on_target(session, url, label)
+
+        # ─── Final Report ────────────────────────────────────────────
+        self.summary_report()
+
+    def summary_report(self):
+        print()
+        banner_end()
+        print(C.BOLD + "  FINAL REPORT".center(60) + C.RESET)
+        banner_end()
+
+        print(f"  Target                      : {self.target}")
+        print(f"  Subdomains discovered       : {len(self.subdomain_results.get('subdomains', [])) if self.subdomain_results else 0}")
+        print(f"  Live HTTP(S) endpoints      : {len(self.subdomain_results.get('live_http', {})) if self.subdomain_results else 0}")
+        print(f"  API endpoints found         : {len(self.found_apis)}")
+        print(f"  GraphQL endpoints found     : {len(self.found_graphql)}")
+        print(f"  JS endpoints extracted      : {len(self.js_results.get('endpoints', [])) if self.js_results else 0}")
+        print(f"  JS secrets found            : {len(self.js_results.get('secrets', [])) if self.js_results else 0}")
+        print(f"  Vulnerabilities detected    : {len(self.vulns)}")
+        print()
+
+        # Subdomain takeover summary
+        takeover = self.subdomain_results.get("takeover_candidates", []) if self.subdomain_results else []
+        if takeover:
+            print(f"  {C.RED}{C.BOLD}  ⚠ Subdomain Takeover Candidates:{C.RESET}")
+            for t in takeover:
+                print(f"     {C.RED}{t['hostname']} — {t['service']}{C.RESET}")
+            print()
+
+        # Vulnerabilities
         if self.vulns:
-            print(f"{C.BOLD}Vulnerabilities:{C.RESET}")
+            vulns_by_severity = {"HIGH": [], "MEDIUM": [], "LOW": []}
             for v in self.vulns:
-                sev_color = C.RED if v["severity"] == "HIGH" else C.YELLOW if v["severity"] == "MEDIUM" else C.CYAN
-                print(f"  {sev_color}[{v['severity']}]{C.RESET} {v['type']}")
-                print(f"         {v['url']}")
-                print(f"         {v['detail']}\n")
+                sev = v.get("severity", "LOW")
+                vulns_by_severity.setdefault(sev, []).append(v)
 
-        report_data = {
-            "target": self.target,
-            "fingerprint": self.fingerprint,
-            "js_scraper": self.js_results,
-            "endpoints": self.found_apis,
-            "graphql_endpoints": self.found_graphql,
-            "vulnerabilities": self.vulns
-        }
-        with open("apihawk_report.json", "w") as f:
-            json.dump(report_data, f, indent=2)
-        ok("Report saved to apihawk_report.json")
+            for sev in ("HIGH", "MEDIUM", "LOW"):
+                if vulns_by_severity[sev]:
+                    color = C.RED if sev == "HIGH" else C.YELLOW if sev == "MEDIUM" else C.CYAN
+                    print(f"  {color}{C.BOLD}{sev} Severity:{C.RESET}")
+                    for v in vulns_by_severity[sev]:
+                        print(f"     [{v['type']}] {v['url']}")
+                        print(f"     {v['detail']}")
+                    print()
+
+        # API endpoints discovered
+        if self.found_apis:
+            print(f"  {C.GREEN}{C.BOLD}API Endpoints Found:{C.RESET}")
+            for a in self.found_apis:
+                url = str(a["url"])
+                status = a["status"]
+                color = C.GREEN if 200 <= status < 300 else C.YELLOW if status < 400 else C.RED
+                print(f"     {color}[{status}]{C.RESET} {url}")
+            print()
+
+        # GraphQL endpoints
+        if self.found_graphql:
+            print(f"  {C.GREEN}{C.BOLD}GraphQL Endpoints Found:{C.RESET}")
+            for g in self.found_graphql:
+                print(f"     {C.GREEN}{g}{C.RESET}")
+            print()
+
+        # JS endpoints
+        if self.js_results and self.js_results.get("endpoints"):
+            print(f"  {C.YELLOW}{C.BOLD}Endpoints from JS:{C.RESET}")
+            for ep in sorted(self.js_results["endpoints"])[:20]:
+                print(f"     {C.YELLOW}{ep}{C.RESET}")
+            if len(self.js_results["endpoints"]) > 20:
+                print(f"     ... and {len(self.js_results['endpoints']) - 20} more")
+            print()
+
+        # Secrets
+        if self.js_results and self.js_results.get("secrets"):
+            print(f"  {C.RED}{C.BOLD}Secrets from JS:{C.RESET}")
+            for s in self.js_results["secrets"]:
+                print(f"     [{s['type']}] {s['value']}")
+                print(f"     File: {s['js_file']}")
+            print()
+
+        # Subdomain summary
+        if self.subdomain_results and self.subdomain_results.get("subdomains"):
+            subdomains = self.subdomain_results["subdomains"]
+            print(f"  {C.CYAN}{C.BOLD}Subdomains Discovered ({len(subdomains)}):{C.RESET}")
+            for s in sorted(subdomains)[:30]:
+                if s in self.subdomain_results.get("resolved", {}):
+                    ips = ", ".join(self.subdomain_results["resolved"][s])
+                    print(f"     {C.GREEN}{s}{C.RESET}  → {ips}")
+                else:
+                    print(f"     {C.YELLOW}{s}{C.RESET}  (unresolved)")
+            if len(subdomains) > 30:
+                print(f"     ... and {len(subdomains) - 30} more")
+            print()
+
+        banner_end()
 
 
-# ─── Banner ────────────────────────────────────────────────────────────────────
+# ─── Main Entry Point ──────────────────────────────────────────────────────────
 
 def banner():
-    print(C.CYAN + C.BOLD + """
-  APIHawk | API & GraphQL Vulnerability Scanner
-""" + C.RESET + C.CYAN + "  For authorized targets only" + C.RESET)
-    print()
+    print(C.CYAN + C.BOLD + r"""
+   ╔══════════════════════════════════════════════════╗
+   ║         █████╗ ██████╗ ██╗  ██╗ █████╗ ██╗    ║
+   ║        ██╔══██╗██╔══██╗██║  ██║██╔══██╗██║    ║
+   ║        ███████║██████╔╝███████║███████║██║    ║
+   ║        ██╔══██║██╔═══╝ ██╔══██║██╔══██║██║    ║
+   ║        ██║  ██║██║     ██║  ██║██║  ██║██║    ║
+   ║        ╚═╝  ╚═╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝    ║
+   ║   Fast Async API & GraphQL Vulnerability Scanner ║
+   ║           with Subdomain Recon Engine            ║
+   ╚══════════════════════════════════════════════════╝
+""" + C.RESET)
 
 
-# ─── CLI ───────────────────────────────────────────────────────────────────────
+def banner_end():
+    print(C.BOLD + "─" * 60 + C.RESET)
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="APIHawk - Fast API & GraphQL Vulnerability Scanner"
+        description="APIHawk — Fast Async API & GraphQL Vulnerability Scanner with Subdomain Recon",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python apihawk.py -u https://target.com
+  python apihawk.py -u target.com --subdomain             # with subdomain recon
+  python apihawk.py -u target.com --subdomain --brute     # subdomain + DNS brute-force
+  python apihawk.py -u target.com --waf --delay 1          # WAF evasion
+  python apihawk.py -u target.com --js-only                # JS scraping only
+  python apihawk.py -u target.com -c 100 -t 10             # high concurrency
+  python apihawk.py -u target.com --subdomain --subdomain-wordlist list.txt
+        """,
     )
-    parser.add_argument("-u", "--url",         required=True,        help="Target URL (e.g. https://target.com)")
-    parser.add_argument("-c", "--concurrency", type=int, default=50, help="Concurrent workers (default: 50)")
-    parser.add_argument("-t", "--timeout",     type=int, default=8,  help="Request timeout in seconds (default: 8)")
-    parser.add_argument("-v", "--verbose",     action="store_true",  help="Show 404s and timeouts")
-    parser.add_argument("--js-only",           action="store_true",  help="Only run JS scraper, skip endpoint fuzzing")
-    parser.add_argument("--waf-evasion",       action="store_true",  help="Rotate UA/IP, randomize browser headers, jitter requests, probe %%2F-encoded paths")
-    parser.add_argument("--delay",             type=float, default=0, help="Fixed delay in seconds between requests (default: 0)")
+
+    parser.add_argument("-u", "--url", required=True, help="Target URL or domain")
+
+    scan_opts = parser.add_argument_group("Scanning Options")
+    scan_opts.add_argument("-c", "--concurrency", type=int, default=50,
+                           help="Max concurrent tasks (default: 50)")
+    scan_opts.add_argument("-t", "--timeout", type=int, default=8,
+                           help="HTTP request timeout in seconds (default: 8)")
+    scan_opts.add_argument("-v", "--verbose", action="store_true",
+                           help="Verbose output (show 404s)")
+    scan_opts.add_argument("--js-only", action="store_true",
+                           help="Only run JS scraper, skip API/GQL scan")
+
+    waf_opts = parser.add_argument_group("WAF Evasion")
+    waf_opts.add_argument("--waf", action="store_true",
+                          help="Enable WAF evasion (random User-Agents, delay, IP spoofing)")
+    waf_opts.add_argument("--delay", type=float, default=0,
+                          help="Fixed delay between requests in seconds")
+
+    sub_opts = parser.add_argument_group("Subdomain Recon")
+    sub_opts.add_argument("--subdomain", action="store_true",
+                          help="Enable subdomain reconnaissance (crt.sh)")
+    sub_opts.add_argument("--brute", action="store_true",
+                          help="Enable DNS brute-force (requires --subdomain)")
+    sub_opts.add_argument("--subdomain-wordlist", type=str,
+                          help="Custom wordlist file for DNS brute-force (one per line)")
+    sub_opts.add_argument("--no-subscan", action="store_true",
+                          help="Don't scan discovered subdomains for APIs/GQL")
+
     args = parser.parse_args()
 
-    parsed = urlparse(args.url)
-    if not parsed.scheme or not parsed.netloc:
-        bad("Invalid URL. Use format: https://target.com")
-        sys.exit(1)
-
-    if args.delay < 0:
-        bad("--delay must be >= 0")
-        sys.exit(1)
+    wordlist = None
+    if args.subdomain_wordlist:
+        try:
+            with open(args.subdomain_wordlist, 'r', errors='ignore') as f:
+                wordlist = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+            ok(f"Loaded {len(wordlist)} entries from {args.subdomain_wordlist}")
+        except Exception as e:
+            bad(f"Failed to load wordlist: {e}")
+            sys.exit(1)
 
     scanner = APIHawk(
         target=args.url,
@@ -881,18 +1922,20 @@ def main():
         timeout=args.timeout,
         verbose=args.verbose,
         js_only=args.js_only,
-        waf_evasion=args.waf_evasion,
+        waf_evasion=args.waf,
         delay=args.delay,
+        subdomain_scan=args.subdomain,
+        subdomain_brute=args.brute,
+        subdomain_wordlist=wordlist,
+        no_subscan=args.no_subscan,
     )
 
-    start = time.time()
     try:
         asyncio.run(scanner.run())
     except KeyboardInterrupt:
-        warn("Scan interrupted by user.")
-    finally:
-        elapsed = time.time() - start
-        info(f"Time elapsed: {elapsed:.1f}s")
+        print()
+        warn("Interrupted by user")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
